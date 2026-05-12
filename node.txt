@@ -1,0 +1,20 @@
+Node* BinaryOpNode::simplify() {
+    Node* simpLeft = left->simplify(); Node* simpRight = right->simplify();
+    if (simpLeft->isConstant() && simpRight->isConstant()) {
+        double valL = simpLeft->getValue(); double valR = simpRight->getValue();
+        delete simpLeft; delete simpRight;
+        if (op == "+") return new ConstantNode(valL + valR);
+        if (op == "-") return new ConstantNode(valL - valR);
+        if (op == "*") return new ConstantNode(valL * valR);
+        if (op == "/") { if (valR != 0) return new ConstantNode(valL / valR); }
+        if (op == "^") return new ConstantNode(std::pow(valL, valR));
+    }
+    if (op == "*" && simpRight->isConstant() && simpRight->getValue() == 1) { delete simpRight; return simpLeft; }
+    if (op == "*" && simpLeft->isConstant() && simpLeft->getValue() == 1) { delete simpLeft; return simpRight; }
+    if (op == "*" && ((simpRight->isConstant() && simpRight->getValue() == 0) || (simpLeft->isConstant() && simpLeft->getValue() == 0))) {
+        delete simpLeft; delete simpRight; return new ConstantNode(0);
+    }
+    if (op == "+" && simpRight->isConstant() && simpRight->getValue() == 0) { delete simpRight; return simpLeft; }
+    if (op == "+" && simpLeft->isConstant() && simpLeft->getValue() == 0) { delete simpLeft; return simpRight; }
+    if (op == "-" && simpRight->isConstant() && simpRight->getValue() == 0) { delete simpRight; return simpLeft; }
+    return new BinaryOpNode(op, simpLeft, simpRight);
