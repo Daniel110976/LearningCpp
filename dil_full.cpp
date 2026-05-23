@@ -40,9 +40,6 @@ public:
     virtual Node* integrate() = 0;
     virtual Node* laplace() = 0;
     virtual Node* simplify() = 0;
-    virtual Node* simplifyWithLog(std::vector<std::string>& executionLog) {
-        return simplify(); //Fallback to normal simplify if unhandled
-    }
     virtual Node* clone() const = 0;
 
     virtual bool isConstant() const { return false; }

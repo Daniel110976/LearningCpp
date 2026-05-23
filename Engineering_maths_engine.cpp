@@ -1,404 +1,185 @@
 #include <iostream>
-#include <string>
 #include <vector>
-#include <stack>
-#include <map>
-#include <cctype>
-#include <algorithm>
+#include <memory>
+#include <string>
 #include <cmath>
+#include <cctype>
 #include <stdexcept>
-#include <iomanip>
 
 // ============================================================================
-// 1. BASE ABSTRACT SYNTAX TREE (AST) NODE INTERFACE
+// 1. ABSTRACT BASE CLASS (The "Interface")
 // ============================================================================
+// Every math component (number, variable, operation) inherits from Node.
+// unique_ptr automatically deletes the memory when the tree goes out of scope.
 class Node {
 public:
     virtual ~Node() = default;
-    
-    // Explicitly handling Effective C++ rule for base class rule-of-three/five
-    Node() = default;
-    Node(const Node&) = delete;
-    Node& operator=(const Node&) = delete;
-
-    virtual std::string toString() = 0;
-    virtual Node* diff(const std::string& var, std::vector<std::string>& log) = 0;
-    virtual Node* simplify(std::vector<std::string>& log) = 0;
-    virtual Node* clone() const = 0;
-
-    virtual bool isConstant() const { return false; }
-    virtual bool isVariable() const { return false; }
-    virtual bool isBinaryOp() const { return false; }
-    virtual bool isFunction() const { return false; }
-    
-    virtual double getValue() const { return 0.0; }
-    virtual std::string getOp() const { return ""; }
-    virtual std::string getFuncName() const { return ""; }
-    virtual std::string getName() const { return ""; }
+    virtual std::string toString() const = 0;
+    virtual double eval(double t) const = 0; // Calculates the value at 't'
+    virtual std::unique_ptr<Node> clone() const = 0;
 };
 
 // ============================================================================
-// 2. CONCRETE AST NODE TYPE DEFINITIONS
+// 2. NODE IMPLEMENTATIONS
 // ============================================================================
 
 class ConstantNode : public Node {
-private:
     double value;
 public:
-    explicit ConstantNode(double val) : value(val) {}
-    bool isConstant() const override { return true; }
-    double getValue() const override { return value; }
+    ConstantNode(double val) : value(val) {}
+    std::string toString() const override { return std::to_string(value); }
     
-    std::string toString() override {
-        if (value == static_cast<int>(value)) return std::to_string(static_cast<int>(value));
-        return std::to_string(value);
-    }
+    // Fix: Remove 't' or comment it out like this:
+    double eval(double /*t*/) const override { return value; } 
     
-    Node* clone() const override { return new ConstantNode(value); }
-    Node* simplify(std::vector<std::string>&) override { return clone(); }
-    
-    Node* diff(const std::string& var, std::vector<std::string>& log) override {
-        log.push_back("Constant Rule: d/d" + var + "(" + toString() + ") = 0");
-        return new ConstantNode(0);
-    }
+    std::unique_ptr<Node> clone() const override { return std::make_unique<ConstantNode>(value); }
 };
 
 class VariableNode : public Node {
-private:
     std::string name;
 public:
-    explicit VariableNode(std::string nm) : name(nm) {}
-    bool isVariable() const override { return true; }
-    std::string getName() const override { return name; }
-    std::string toString() override { return name; }
-    Node* clone() const override { return new VariableNode(name); }
-    Node* simplify(std::vector<std::string>&) override { return clone(); }
-    
-    Node* diff(const std::string& var, std::vector<std::string>& log) override {
-        if (name == var) {
-            log.push_back("Power Rule: d/d" + var + "(" + name + ") = 1");
-            return new ConstantNode(1);
-        }
-        log.push_back("Symbolic Constant: d/d" + var + "(" + name + ") = 0");
-        return new ConstantNode(0);
-    }
+    VariableNode(std::string nm) : name(nm) {}
+    std::string toString() const override { return name; }
+    double eval(double t) const override { return (name == "t") ? t : 0.0; }
+    std::unique_ptr<Node> clone() const override { return std::make_unique<VariableNode>(name); }
 };
 
 class BinaryOpNode : public Node {
-private:
     std::string op;
-    Node* left;
-    Node* right;
+    std::unique_ptr<Node> left, right;
 public:
-    BinaryOpNode(std::string operation, Node* l, Node* r) : op(operation), left(l), right(r) {}
-    ~BinaryOpNode() override { delete left; delete right; }
+    BinaryOpNode(std::string o, std::unique_ptr<Node> l, std::unique_ptr<Node> r) 
+        : op(o), left(std::move(l)), right(std::move(r)) {}
 
-    // Satisfying -Weffc++ by explicitly banning raw pointer cloning copies
-    BinaryOpNode(const BinaryOpNode&) = delete;
-    BinaryOpNode& operator=(const BinaryOpNode&) = delete;
-
-    bool isBinaryOp() const override { return true; }
-    std::string getOp() const override { return op; }
-    std::string toString() override { return "(" + left->toString() + " " + op + " " + right->toString() + ")"; }
-    Node* clone() const override { return new BinaryOpNode(op, left->clone(), right->clone()); }
+    std::string toString() const override { return "(" + left->toString() + " " + op + " " + right->toString() + ")"; }
     
-    Node* diff(const std::string& var, std::vector<std::string>& log) override;
-    Node* simplify(std::vector<std::string>& log) override;
+    double eval(double t) const override {
+        double l = left->eval(t), r = right->eval(t);
+        if (op == "+") return l + r;
+        if (op == "-") return l - r;
+        if (op == "*") return l * r;
+        if (op == "/") return l / r;
+        return 0;
+    }
+    std::unique_ptr<Node> clone() const override { return std::make_unique<BinaryOpNode>(op, left->clone(), right->clone()); }
 };
 
 class FunctionNode : public Node {
-private:
     std::string name;
-    Node* arg;
+    std::unique_ptr<Node> arg;
 public:
-    FunctionNode(std::string nm, Node* a) : name(nm), arg(a) {}
-    ~FunctionNode() override { delete arg; }
-
-    // Satisfying -Weffc++ pointer containment rules
-    FunctionNode(const FunctionNode&) = delete;
-    FunctionNode& operator=(const FunctionNode&) = delete;
-
-    bool isFunction() const override { return true; }
-    std::string getFuncName() const override { return name; }
-    std::string toString() override { return name + "(" + arg->toString() + ")"; }
-    Node* clone() const override { return new FunctionNode(name, arg->clone()); }
+    FunctionNode(std::string nm, std::unique_ptr<Node> a) : name(nm), arg(std::move(a)) {}
+    std::string toString() const override { return name + "(" + arg->toString() + ")"; }
     
-    Node* simplify(std::vector<std::string>& log) override {
-        return new FunctionNode(name, arg->simplify(log));
-    }
-    
-    Node* diff(const std::string& var, std::vector<std::string>& log) override {
-        log.push_back("Chain Rule: d/d" + var + "[" + name + "(u)] = " + name + "'(u) * u'");
-        Node* uPrime = arg->diff(var, log);
-        
-        if (name == "sin") {
-            return new BinaryOpNode("*", new FunctionNode("cos", arg->clone()), uPrime);
-        }
-        if (name == "cos") {
-            return new BinaryOpNode("*", new BinaryOpNode("*", new ConstantNode(-1), new FunctionNode("sin", arg->clone())), uPrime);
-        }
-        if (name == "exp") {
-            return new BinaryOpNode("*", new FunctionNode("exp", arg->clone()), uPrime);
-        }
-        return new FunctionNode(name, uPrime);
-    }
-};
-
-// ============================================================================
-// 3. CALCULATION & SIMPLIFICATION PIPELINES
-// ============================================================================
-Node* BinaryOpNode::diff(const std::string& var, std::vector<std::string>& log) {
-    if (op == "+" || op == "-") {
-        return new BinaryOpNode(op, left->diff(var, log), right->diff(var, log));
-    }
-    if (op == "*") {
-        log.push_back("Product Rule applied to: " + toString());
-        return new BinaryOpNode("+", 
-            new BinaryOpNode("*", left->diff(var, log), right->clone()), 
-            new BinaryOpNode("*", left->clone(), right->diff(var, log))
-        );
-    }
-    return new ConstantNode(0);
-}
-
-Node* BinaryOpNode::simplify(std::vector<std::string>& log) {
-    Node* sLeft = left->simplify(log);
-    Node* sRight = right->simplify(log);
-
-    if (op == "*") {
-        if ((sLeft->isConstant() && sLeft->getValue() == 0) || (sRight->isConstant() && sRight->getValue() == 0)) {
-            delete sLeft; delete sRight;
-            return new ConstantNode(0);
-        }
-        if (sLeft->isConstant() && sLeft->getValue() == 1) { delete sLeft; return sRight; }
-        if (sRight->isConstant() && sRight->getValue() == 1) { delete sRight; return sLeft; }
-    }
-    if (op == "+" || op == "-") {
-        if (sLeft->isConstant() && sLeft->getValue() == 0) { delete sLeft; return sRight; }
-        if (sRight->isConstant() && sRight->getValue() == 0) { delete sRight; return sLeft; }
-        if (sLeft->toString() == sRight->toString() && op == "-") {
-            log.push_back("Identical structures subtracted (" + sLeft->toString() + "). Simplified to 0.");
-            delete sLeft; delete sRight;
-            return new ConstantNode(0);
-        }
-    }
-    if (sLeft->isConstant() && sRight->isConstant()) {
-        double l = sLeft->getValue(); double r = sRight->getValue();
-        delete sLeft; delete sRight;
-        if (op == "+") return new ConstantNode(l + r);
-        if (op == "-") return new ConstantNode(l - r);
-        if (op == "*") return new ConstantNode(l * r);
-    }
-    return new BinaryOpNode(op, sLeft, sRight);
-}
-
-// ============================================================================
-// 4. LEXICAL ANALYZER (TOKENIZER)
-// ============================================================================
-enum TokenType { T_NUMBER, T_VARIABLE, T_OPERATOR, T_FUNCTION, T_LPAREN, T_RPAREN };
-
-struct Token {
-    TokenType type;
-    std::string value;
-};
-
-class Lexer {
-public:
-    static std::vector<Token> tokenize(const std::string& input) {
-        std::vector<Token> tokens;
-        size_t i = 0;
-        while (i < input.length()) {
-            if (isspace(input[i])) { i++; continue; }
-            if (isdigit(input[i]) || input[i] == '.') {
-                std::string num;
-                while (i < input.length() && (isdigit(input[i]) || input[i] == '.')) num += input[i++];
-                tokens.push_back({T_NUMBER, num});
-                continue;
-            }
-            if (isalpha(input[i])) {
-                std::string name;
-                while (i < input.length() && isalpha(input[i])) name += input[i++];
-                if (name == "sin" || name == "cos" || name == "exp") tokens.push_back({T_FUNCTION, name});
-                else tokens.push_back({T_VARIABLE, name});
-                continue;
-            }
-            if (input[i] == '+' || input[i] == '-' || input[i] == '*' || input[i] == '/') {
-                tokens.push_back({T_OPERATOR, std::string(1, input[i++])});
-                continue;
-            }
-            if (input[i] == '(') { tokens.push_back({T_LPAREN, "("}); i++; continue; }
-            if (input[i] == ')') { tokens.push_back({T_RPAREN, ")"}); i++; continue; }
-            i++;
-        }
-        return tokens;
-    }
-};
-
-// ============================================================================
-// 5. SHUNTING-YARD ABSTRACT SYNTAX TREE PARSER
-// ============================================================================
-class ShuntingYardParser {
-private:
-    static int precedence(const std::string& op) {
-        if (op == "+" || op == "-") return 1;
-        if (op == "*" || op == "/") return 2;
+    double eval(double t) const override {
+        double val = arg->eval(t);
+        if (name == "exp") return std::exp(val);
+        if (name == "ln")  return std::log(val);
+        if (name == "sqrt") return std::sqrt(val);
         return 0;
     }
+    std::unique_ptr<Node> clone() const override { return std::make_unique<FunctionNode>(name, arg->clone()); }
+};
 
-    static void processOperatorStack(std::stack<Node*>& nodes, std::stack<Token>& ops) {
-        if (ops.empty()) return;
-        Token opToken = ops.top(); ops.pop();
+// ============================================================================
+// 3. LEXER (Implicit Multiplication Logic)
+// ============================================================================
+std::vector<std::string> tokenize(std::string src) {
+    std::vector<std::string> tokens;
+    for (size_t i = 0; i < src.size(); ++i) {
+        if (isspace(src[i])) continue;
 
-        if (opToken.type == T_FUNCTION) {
-            if (nodes.empty()) throw std::runtime_error("Parser Error: Missing function argument.");
-            Node* arg = nodes.top(); nodes.pop();
-            nodes.push(new FunctionNode(opToken.value, arg));
-        } else if (opToken.type == T_OPERATOR) {
-            if (nodes.size() < 2) throw std::runtime_error("Parser Error: Missing operator operand.");
-            Node* right = nodes.top(); nodes.pop();
-            Node* left = nodes.top(); nodes.pop();
-            nodes.push(new BinaryOpNode(opToken.value, left, right));
-        }
-    }
-
-public:
-    static Node* parse(const std::string& expression) {
-        std::vector<Token> tokens = Lexer::tokenize(expression);
-        std::stack<Node*> nodes;
-        std::stack<Token> ops;
-
-        for (const auto& token : tokens) {
-            if (token.type == T_NUMBER) {
-                nodes.push(new ConstantNode(std::stod(token.value)));
-            } else if (token.type == T_VARIABLE) {
-                nodes.push(new VariableNode(token.value));
-            } else if (token.type == T_FUNCTION) {
-                ops.push(token);
-            } else if (token.type == T_LPAREN) {
-                ops.push(token);
-            } else if (token.type == T_RPAREN) {
-                while (!ops.empty() && ops.top().type != T_LPAREN) {
-                    processOperatorStack(nodes, ops);
-                }
-                if (!ops.empty()) ops.pop(); 
-                if (!ops.empty() && ops.top().type == T_FUNCTION) {
-                    processOperatorStack(nodes, ops);
-                }
-            } else if (token.type == T_OPERATOR) {
-                while (!ops.empty() && ops.top().type != T_LPAREN && 
-                       precedence(ops.top().value) >= precedence(token.value)) {
-                    processOperatorStack(nodes, ops);
-                }
-                ops.push(token);
+        // IMPLICIT MULTIPLICATION: If we have "2t" or "5(t)", insert a "*"
+        if (!tokens.empty()) {
+            std::string last = tokens.back();
+            bool lastIsVal = (isdigit(last[0]) || last == "t" || last == ")");
+            bool currIsVal = (isdigit(src[i]) || src[i] == 't' || src[i] == '(' || isalpha(src[i]));
+            
+            if (lastIsVal && currIsVal) {
+                tokens.push_back("*"); // Injects multiplication
             }
         }
-        while (!ops.empty()) {
-            processOperatorStack(nodes, ops);
-        }
-        if (nodes.size() != 1) throw std::runtime_error("Parser Error: Malformed tree generation.");
-        return nodes.top();
-    }
-};
 
-// ============================================================================
-// 6. MULTI-DIMENSIONAL MATRIX ENGINE (FIXED INITIALIZATION ORDER)
-// ============================================================================
-class MatrixEngine {
-private:
-    // Fixed: Declared in the exact order they are evaluated to pass -Wreorder
-    size_t rows;
-    size_t cols;
-    std::vector<std::vector<double>> grid;
-
-public:
-    MatrixEngine(size_t r, size_t c) : rows(r), cols(c), grid(r, std::vector<double>(c, 0.0)) {}
-
-    void populate(const std::vector<std::vector<double>>& values) {
-        if (values.size() == rows && values[0].size() == cols) grid = values;
-    }
-
-    double computeDeterminant() const {
-        if (rows != cols) throw std::domain_error("Determinant Error: Matrix must be square.");
-        if (rows == 2) {
-            return (grid[0][0] * grid[1][1]) - (grid[0][1] * grid[1][0]);
-        }
-        if (rows == 3) {
-            double a = grid[0][0] * ((grid[1][1] * grid[2][2]) - (grid[1][2] * grid[2][1]));
-            double b = grid[0][1] * ((grid[1][0] * grid[2][2]) - (grid[1][2] * grid[2][0]));
-            double c = grid[0][2] * ((grid[1][0] * grid[2][1]) - (grid[1][1] * grid[2][0]));
-            return a - b + c;
-        }
-        throw std::domain_error("Unsupported dimensions.");
-    }
-
-    void display() const {
-        for (const auto& row : grid) {
-            std::cout << "      [ ";
-            for (double val : row) std::cout << std::setw(4) << val << " ";
-            std::cout << "]\n";
+        if (isdigit(src[i]) || src[i] == '.') {
+            std::string n; while(i < src.size() && (isdigit(src[i]) || src[i] == '.')) n += src[i++]; i--;
+            tokens.push_back(n);
+        } else if (isalpha(src[i])) {
+            std::string s; while(i < src.size() && isalpha(src[i])) s += src[i++]; i--;
+            tokens.push_back(s);
+        } else {
+            tokens.push_back(std::string(1, src[i]));
         }
     }
-};
+    return tokens;
+}
 
 // ============================================================================
-// 7. CENTRAL COMMAND ROUTER
+// 4. PARSER (Recursive Descent)
 // ============================================================================
-class IntegratedEngineeringEngine {
-private:
-    std::string stripPrefix(const std::string& raw, const std::string& prefix) {
-        size_t pos = raw.find(prefix);
-        if (pos != std::string::npos) return raw.substr(pos + prefix.length());
-        return raw;
+class Parser {
+    std::vector<std::string> tokens;
+    size_t pos = 0;
+
+    std::unique_ptr<Node> parsePrimary() {
+        std::string t = tokens[pos++];
+        if (t == "exp" || t == "sqrt" || t == "ln") {
+            pos++; // Skip '('
+            auto node = std::make_unique<FunctionNode>(t, parseExpression());
+            pos++; // Skip ')'
+            return node;
+        }
+        if (t == "(") {
+            auto node = parseExpression();
+            pos++; // Skip ')'
+            return node;
+        }
+        if (t == "t") return std::make_unique<VariableNode>("t");
+        return std::make_unique<ConstantNode>(std::stod(t));
     }
 
 public:
-    void execute(const std::string& rawQuery) {
-        std::vector<std::string> log;
-        std::string lowerQuery = rawQuery;
-        std::transform(lowerQuery.begin(), lowerQuery.end(), lowerQuery.begin(), ::tolower);
-
-        if (lowerQuery.rfind("diff:", 0) == 0) {
-            std::string formula = stripPrefix(rawQuery, "diff:");
-            std::cout << "\n[CALCULUS DOMAIN] Parsing: " << formula << "\n";
-            Node* ast = ShuntingYardParser::parse(formula);
-            Node* rawDiff = ast->diff("x", log);
-            Node* simplified = rawDiff->simplify(log);
-            std::cout << "  -> Derivative: " << simplified->toString() << "\n";
-            delete ast; delete rawDiff; delete simplified;
+    Parser(std::vector<std::string> t) : tokens(t) {}
+    
+    std::unique_ptr<Node> parseExpression() {
+        auto left = parsePrimary();
+        while (pos < tokens.size() && tokens[pos] != ")") {
+            std::string op = tokens[pos++];
+            auto right = parsePrimary();
+            left = std::make_unique<BinaryOpNode>(op, std::move(left), std::move(right));
         }
-        else if (lowerQuery.rfind("prove:", 0) == 0) {
-            std::cout << "\n[PROOF DOMAIN] Triggering Stroud Proof Framework Verification...\n";
-            std::cout << "  -> Target: d2y/dx2 + 4*m*(dy/dx) + 20*m^2*y = 0\n";
-            std::cout << "  -> Evaluation Status: Identity Confirmed.\n";
-        }
-        else if (lowerQuery.rfind("matrix:", 0) == 0) {
-            std::cout << "\n[MATRIX GRID DOMAIN] Activating 3x3 Array Architecture Grid...\n";
-            MatrixEngine m3(3, 3);
-            m3.populate({{1, 2, 3}, {0, 1, 4}, {5, 6, 0}});
-            m3.display();
-            std::cout << "  -> Computed Matrix Determinant: " << m3.computeDeterminant() << "\n";
-        }
-        else if (lowerQuery.rfind("raphson:", 0) == 0) {
-            std::cout << "\n[NUMERICAL INTERPOLATION DOMAIN] Initializing Newton-Raphson Solver System...\n";
-        }
-        else if (lowerQuery.rfind("laplace:", 0) == 0) {
-            std::cout << "\n[FREQUENCY TRANSFORMATION DOMAIN] Processing Laplace Shift Lookup...\n";
-        }
-        else {
-            std::cout << "\n[ROUTER ERROR] Unknown command syntax.\n";
-        }
+        return left;
     }
 };
 
 // ============================================================================
-// 8. ENVIRONMENT SYSTEM ENTRY POINT
+// 5. RUNTIME LOOP
 // ============================================================================
 int main() {
-    IntegratedEngineeringEngine engine;
+    std::string input;
+    std::cout << "--- Engineering Math Verifier ---\n";
+    std::cout << "Enter expression (e.g., 2t + exp(t)) or 'exit':\n";
 
-    engine.execute("diff: cos(x) + 4 * x");
-    engine.execute("matrix: run 3x3 array evaluation");
-    engine.execute("prove: verify problem 16 identity loop");
+    while (true) {
+        std::cout << "\nInput > ";
+        std::getline(std::cin, input);
+        if (input == "exit") break;
+        if (input.empty()) continue;
 
+        try {
+            // 1. Tokenize (Lexing)
+            auto tokens = tokenize(input);
+            
+            // 2. Parse (Building the AST)
+            Parser parser(tokens);
+            auto root = parser.parseExpression();
+
+            // 3. Results
+            std::cout << "Parsed: " << root->toString() << "\n";
+            std::cout << "Eval at t=2.0: " << root->eval(2.0) << "\n";
+            
+        } catch (const std::exception& e) {
+            std::cout << "Syntax Error: " << e.what() << " (Check parens/formatting)\n";
+        }
+    }
     return 0;
 }
